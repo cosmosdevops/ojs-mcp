@@ -110,3 +110,9 @@ go build        # then point an MCP client at ./ojs-mcp
 
 The tests use a tiny fake schema tree in `testdata/site`, so they
 don't need the network.
+
+## Licence
+
+Apache 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+Not affiliated with or endorsed by Red Hat.
