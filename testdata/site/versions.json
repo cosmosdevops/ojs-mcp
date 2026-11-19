@@ -1,0 +1,6 @@
+{"versions": [
+  {"minor": "4.9", "dirs": {"standalone": "v4.9.18-standalone"}},
+  {"minor": "4.22", "kubernetes": "1.35", "dirs": {
+    "next-standalone": "v4.22-next-standalone",
+    "next-standalone-strict": "v4.22-next-standalone-strict"}}
+]}

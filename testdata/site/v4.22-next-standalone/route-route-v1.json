@@ -1,0 +1,4 @@
+{"$schema": "http://json-schema.org/schema#", "type": "object", "required": ["spec"],
+ "properties": {"apiVersion": {"type": "string"}, "kind": {"type": "string"},
+  "metadata": {"type": "object"},
+  "spec": {"type": "object", "required": ["to"], "properties": {"to": {"type": "object"}, "port": {"type": "integer"}}}}}

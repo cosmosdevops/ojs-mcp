@@ -1,0 +1,37 @@
+{
+ "oneOf": [
+  {
+   "$ref": "_definitions.json#/definitions/com.github.openshift.api.route.v1.Route"
+  },
+  {
+   "$ref": "_definitions.json#/definitions/com.github.openshift.api.route.v1.RouteList"
+  },
+  {
+   "$ref": "_definitions.json#/definitions/com.github.openshift.api.apps.v1.DeploymentConfig"
+  },
+  {
+   "$ref": "_definitions.json#/definitions/io.k8s.api.apps.v1.Deployment"
+  },
+  {
+   "$ref": "_definitions.json#/definitions/io.k8s.api.apps.v1.StatefulSet"
+  },
+  {
+   "$ref": "_definitions.json#/definitions/io.k8s.api.core.v1.ConfigMap"
+  },
+  {
+   "$ref": "_definitions.json#/definitions/io.k8s.api.core.v1.Service"
+  },
+  {
+   "$ref": "_definitions.json#/definitions/io.k8s.api.networking.v1.Ingress"
+  },
+  {
+   "$ref": "_definitions.json#/definitions/io.k8s.api.autoscaling.v2.HorizontalPodAutoscaler"
+  },
+  {
+   "$ref": "_definitions.json#/definitions/com.coreos.monitoring.v1.ServiceMonitor"
+  },
+  {
+   "$ref": "_definitions.json#/definitions/io.k8s.apimachinery.pkg.util.intstr.IntOrString"
+  }
+ ]
+}
