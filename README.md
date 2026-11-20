@@ -76,7 +76,7 @@ tell whether a name, an image or a referenced object exists.
 
 ## Install
 
-Install it (needs Go 1.25 or later):
+Install it (needs Go 1.26 or later):
 
 ```sh
 go install github.com/cosmosdevops/ojs-mcp@latest
@@ -172,6 +172,68 @@ sudo apachectl configtest && sudo systemctl reload apache2
 ```
 
 Serve it over HTTPS only: the key travels in a header on every request.
+
+### Or set it up with Docker
+
+There is an image at `ghcr.io/cosmosdevops/ojs-mcp`, built from every commit
+on `main`. It holds the one program and nothing else, and runs as an
+unprivileged user (ID 65532).
+
+Make the keys directory, readable by that user, then start it with the
+compose file from `deploy/`:
+
+```sh
+sudo install -d -m 750 -o root -g 65532 /etc/ojs-mcp
+sudo install -m 640 -o root -g 65532 /dev/null /etc/ojs-mcp/keys
+docker compose -f deploy/compose.yaml up -d
+curl http://127.0.0.1:8087/healthz                  # prints ok
+```
+
+The compose file mounts the site's document root and the keys directory
+read-only, and publishes the port on localhost only. Route `/mcp` to it from
+Apache as above.
+
+Make keys with the image too. The key is printed for you; the line for the
+file goes to standard output:
+
+```sh
+sudo sh -c 'docker run --rm ghcr.io/cosmosdevops/ojs-mcp -new-key alice >> /etc/ojs-mcp/keys'
+```
+
+To update, pull and start again. Nothing is lost: there are no sessions.
+
+```sh
+docker compose -f deploy/compose.yaml pull && docker compose -f deploy/compose.yaml up -d
+```
+
+To build the image yourself instead: `docker build -t ojs-mcp .`
+
+**Podman** works too. The image and the compose file run unchanged with
+`podman` and `podman-compose`. Two things differ:
+
+- Run as root (`sudo podman …`), the keys directory is set up exactly as
+  above.
+- Run rootless, user IDs inside the container are shifted, so ID 65532 can't
+  read a file that only your own user can. Map the container's user onto
+  yours with `--userns=keep-id:uid=65532,gid=65532` (in compose:
+  `userns_mode: "keep-id:uid=65532,gid=65532"`), and have your own user own
+  the keys directory.
+
+On a host with SELinux (Fedora, RHEL), add `,z` to the two volume lines, as
+in `/etc/ojs-mcp:/keys:ro,z`.
+
+The image also works for the local mode, with no Go needed:
+
+```json
+{
+  "mcpServers": {
+    "openshift-json-schema": {
+      "command": "docker",
+      "args": ["run", "--rm", "-i", "ghcr.io/cosmosdevops/ojs-mcp"]
+    }
+  }
+}
+```
 
 ### Connect an agent
 

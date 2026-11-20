@@ -261,3 +261,18 @@ func serveHTTP(done <-chan struct{}, addr string, handler http.Handler) error {
 	}
 	return nil
 }
+
+// checkHealth asks a running server whether it is up. Container images have
+// no curl to do this with.
+func checkHealth(url string) error {
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("%s: %s", url, resp.Status)
+	}
+	return nil
+}

@@ -1,0 +1,6 @@
+# Only the Go sources go into the build.
+*
+!go.mod
+!go.sum
+!*.go
+*_test.go
