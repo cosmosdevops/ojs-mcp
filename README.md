@@ -211,7 +211,8 @@ To update, pull and start again. Nothing is lost: there are no sessions.
 docker compose -f deploy/compose.yaml pull && docker compose -f deploy/compose.yaml up -d
 ```
 
-To build the image yourself instead: `docker build -t ojs-mcp .`
+To build the image yourself instead:
+`docker build --build-arg VERSION=1.2.3 -t ojs-mcp .`
 
 **Podman** works too. The image and the compose file run unchanged with
 `podman` and `podman-compose`. Two things differ:
@@ -284,6 +285,20 @@ go build        # then point an MCP client at ./ojs-mcp
 
 The tests use a tiny fake schema tree in `testdata/site`, so they
 don't need the network.
+
+### Releasing
+
+The version is the git tag. Nothing in the code needs changing:
+
+```sh
+git tag -a v1.2.3 -m "ojs-mcp 1.2.3"
+git push origin v1.2.3
+```
+
+CI then publishes the `1.2.3` image, and `go install …@v1.2.3` works.
+`ojs-mcp -version` reports the tag in both. A build between tags reports a
+version made from the last tag and the commit, and a build with no git
+history to read reports `dev`.
 
 ## Licence
 
