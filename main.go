@@ -103,6 +103,7 @@ func main() {
 	perMinute := flag.Float64("rate", 60, "with -http: requests each API key may make per minute")
 	burst := flag.Int("burst", 30, "with -http: requests each API key may make at once before the rate applies")
 	newKeyName := flag.String("new-key", "", "make an API key for this name: prints the key, and the line to add to the -keys file")
+	healthURL := flag.String("check-health", "", "ask a running server's health URL (e.g. http://127.0.0.1:8087/healthz) and exit 0 if it is up; for container health checks")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 	if *showVersion {
@@ -112,6 +113,12 @@ func main() {
 	log.SetFlags(0)
 	log.SetPrefix("ojs-mcp: ")
 
+	if *healthURL != "" {
+		if err := checkHealth(*healthURL); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if *newKeyName != "" {
 		key, line, err := newKey(*newKeyName)
 		if err != nil {

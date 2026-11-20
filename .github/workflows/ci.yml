@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
 
 permissions:
@@ -35,3 +36,38 @@ jobs:
         run: go test -race ./...
       - name: Build
         run: CGO_ENABLED=0 go build -trimpath -o /tmp/ojs-mcp . && /tmp/ojs-mcp -version
+
+  image:
+    name: Container image
+    runs-on: ubuntu-latest
+    needs: test
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: docker build -t "$IMAGE:build" .
+      - name: Check the image runs
+        run: |
+          docker run --rm "$IMAGE:build" -version
+          # The keys line must come out on stdout alone, never the key.
+          line=$(docker run --rm "$IMAGE:build" -new-key ci 2>/dev/null)
+          echo "$line" | grep -Eq '^ci [0-9a-f]{64}$'
+      # Pull requests only build. Pushes to main publish :latest and the
+      # commit; version tags (v1.2.3) publish that version too.
+      - name: Publish
+        if: github.event_name == 'push'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GITHUB_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          tags=("sha-${GITHUB_SHA::7}")
+          if [ "$GITHUB_REF" = refs/heads/main ]; then tags+=(latest); fi
+          if [ "$GITHUB_REF_TYPE" = tag ]; then tags+=("${GITHUB_REF_NAME#v}"); fi
+          for tag in "${tags[@]}"; do
+            docker tag "$IMAGE:build" "$IMAGE:$tag"
+            docker push "$IMAGE:$tag"
+          done

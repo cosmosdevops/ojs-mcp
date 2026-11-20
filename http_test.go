@@ -278,3 +278,18 @@ func TestHTTPEndToEnd(t *testing.T) {
 		t.Errorf("report = %+v", rep)
 	}
 }
+
+func TestCheckHealth(t *testing.T) {
+	path, _ := keysFile(t, "alice")
+	ts := hosted(t, path, 600, 100)
+	if err := checkHealth(ts.URL + "/healthz"); err != nil {
+		t.Errorf("a running server: %v", err)
+	}
+	if err := checkHealth(ts.URL + "/mcp"); err == nil {
+		t.Error("a 401 counted as healthy")
+	}
+	ts.Close()
+	if err := checkHealth(ts.URL + "/healthz"); err == nil {
+		t.Error("a stopped server counted as healthy")
+	}
+}

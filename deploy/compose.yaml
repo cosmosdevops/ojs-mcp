@@ -1,0 +1,35 @@
+# Run ojs-mcp beside the website, on the server that has the site's files.
+#
+#   docker compose -f deploy/compose.yaml up -d
+#
+# It listens on localhost only. Apache passes /mcp on to it; see
+# ojs-mcp-apache.conf.
+services:
+  ojs-mcp:
+    image: ghcr.io/cosmosdevops/ojs-mcp:latest
+    # Or build from a checkout of this repo instead of pulling:
+    # build: ..
+    command:
+      - -http=0.0.0.0:8087
+      - -schemas=/schemas
+      - -keys=/keys/keys
+    ports:
+      - "127.0.0.1:8087:8087"
+    volumes:
+      # The schemas, straight from the site's document root.
+      - /var/www/openshiftjsonschema.dev:/schemas:ro
+      # The directory holding the keys file. Mount the directory, not the
+      # file: editors replace a file when saving, and a mounted file would
+      # keep pointing at the old one.
+      - /etc/ojs-mcp:/keys:ro
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD", "/ojs-mcp", "-check-health", "http://127.0.0.1:8087/healthz"]
+      interval: 30s
+      timeout: 6s
+      retries: 3
+      start_period: 5s
