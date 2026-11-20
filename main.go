@@ -1,8 +1,12 @@
 // ojs-mcp is an MCP server that checks Kubernetes and OpenShift manifests
 // against the JSON Schemas published at https://openshiftjsonschema.dev.
 //
-// It talks MCP over stdin/stdout, for an agent to run locally. The manifests
-// it checks never leave the machine; only schemas are downloaded.
+// With no flags it talks MCP over stdin/stdout, for an agent to run locally.
+// The manifests it checks then never leave the machine; only schemas are
+// downloaded.
+//
+// With -http it serves MCP over HTTP at /mcp, for hosting. Callers need an
+// API key from the -keys file, and each key has its own rate limit.
 package main
 
 import (
@@ -94,6 +98,11 @@ func main() {
 	schemas := flag.String("schemas", "https://openshiftjsonschema.dev",
 		"where the schemas are: the site's URL, or a local copy of its document root")
 	maxInput := flag.Int("max-input", 1<<20, "largest YAML input accepted per call, in bytes")
+	addr := flag.String("http", "", "serve MCP over HTTP on this address (e.g. 127.0.0.1:8087) instead of stdin/stdout; needs -keys")
+	keysFile := flag.String("keys", "", "file of API keys for -http, one \"name sha256\" per line; add lines with -new-key")
+	perMinute := flag.Float64("rate", 60, "with -http: requests each API key may make per minute")
+	burst := flag.Int("burst", 30, "with -http: requests each API key may make at once before the rate applies")
+	newKeyName := flag.String("new-key", "", "make an API key for this name: prints the key, and the line to add to the -keys file")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 	if *showVersion {
@@ -103,11 +112,42 @@ func main() {
 	log.SetFlags(0)
 	log.SetPrefix("ojs-mcp: ")
 
+	if *newKeyName != "" {
+		key, line, err := newKey(*newKeyName)
+		if err != nil {
+			log.Fatal(err)
+		}
+		// The line goes to stdout so it can be appended to the keys file;
+		// the key itself goes to the terminal only.
+		fmt.Fprintf(os.Stderr, "API key for %s (shown once, it is not stored):\n\n  %s\n\n", *newKeyName, key)
+		fmt.Println(line)
+		return
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	server := newServer(newCatalog(newSource(*schemas)), *maxInput)
 
-	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil && !errors.Is(err, context.Canceled) {
+	if *addr == "" {
+		if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil && !errors.Is(err, context.Canceled) {
+			log.Fatal(err)
+		}
+		return
+	}
+
+	if *keysFile == "" {
+		log.Fatal("-http needs -keys: the hosted server only answers callers with an API key")
+	}
+	if *perMinute <= 0 || *burst < 1 {
+		log.Fatal("-rate must be above 0 and -burst at least 1")
+	}
+	keys, err := openKeyStore(*keysFile)
+	if err != nil {
+		log.Fatalf("reading API keys: %v", err)
+	}
+	handler := newHTTPHandler(server, keys, newLimiters(*perMinute, *burst), *maxInput)
+	log.Printf("serving MCP on http://%s/mcp, schemas from %s, %g requests a minute per key", *addr, *schemas, *perMinute)
+	if err := serveHTTP(ctx.Done(), *addr, handler); err != nil {
 		log.Fatal(err)
 	}
 }

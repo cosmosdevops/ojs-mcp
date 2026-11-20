@@ -5,9 +5,13 @@ agent check the YAML it writes against the schemas on
 [openshiftjsonschema.dev](https://openshiftjsonschema.dev), before the YAML
 reaches a cluster.
 
-The agent starts it on your own machine and talks to it over stdin/stdout.
-Your manifests never leave that machine. The only thing it does on the
-network is download the schemas it needs from the site.
+It runs in two ways:
+
+- **Locally.** The agent starts it on your own machine and talks to it over
+  stdin/stdout. Your manifests never leave that machine. The only thing it
+  does on the network is download the schemas it needs from the site.
+- **Hosted.** One copy serves many agents over HTTP. Each caller needs an
+  API key and has their own rate limit. See [Host it](#host-it).
 
 ## Tools
 
@@ -100,6 +104,109 @@ and the `v*-standalone*` directories, laid out as on the site:
 ```sh
 ojs-mcp -schemas /path/to/schemas
 ```
+
+## Host it
+
+With `-http`, `ojs-mcp` serves MCP at `/mcp`. It only answers callers who
+send an API key, and each key has its own rate limit.
+
+Keep in mind what hosting means: callers' manifests are sent to your server.
+`ojs-mcp` holds them in memory for the length of one call and never writes or
+logs them, but they do pass through it and any proxy in front of it.
+Manifests can contain secrets, so tell your users, and prefer the local mode
+for anything sensitive.
+
+### API keys
+
+Make a key for each person or team:
+
+```sh
+sudo sh -c 'ojs-mcp -new-key alice >> /etc/ojs-mcp/keys'
+```
+
+This prints the key once, for you to pass on, and adds a line to the keys
+file. The file holds a name and the SHA-256 of each key, never the key
+itself, so a lost key can't be recovered: make a new one.
+
+```
+# /etc/ojs-mcp/keys
+alice 5f2b6c…
+build-bot 9d41e0…
+```
+
+To revoke a key, delete its line. The server notices changes to the file
+within a few seconds, with no restart. If an edit leaves the file broken, it
+keeps using the keys it had and logs why.
+
+### Rate limits
+
+Each key may make 60 requests a minute, and up to 30 at once before that rate
+applies. Change these with `-rate` and `-burst`. Every MCP message counts as
+a request, including the few an agent sends when it connects. A caller over
+the limit gets `429 Too Many Requests` with a `Retry-After` header.
+
+One key's use doesn't affect another's. Requests without a valid key get
+`401` and don't count against anyone.
+
+### Set it up
+
+On a server that has the site's files, with the files in `deploy/`:
+
+```sh
+CGO_ENABLED=0 go build -trimpath -o ojs-mcp .       # on any machine
+sudo install -m 755 ojs-mcp /usr/local/bin/
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin ojs-mcp
+sudo install -d -m 750 -o root -g ojs-mcp /etc/ojs-mcp
+sudo install -m 640 -o root -g ojs-mcp /dev/null /etc/ojs-mcp/keys
+sudo install -m 644 deploy/ojs-mcp.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now ojs-mcp
+curl http://127.0.0.1:8087/healthz                  # prints ok
+```
+
+Then route `/mcp` to it from Apache. Copy `deploy/ojs-mcp-apache.conf` to
+`/etc/apache2/` and include it in the site's HTTPS `<VirtualHost>`:
+
+```sh
+sudo a2enmod proxy proxy_http
+sudo apachectl configtest && sudo systemctl reload apache2
+```
+
+Serve it over HTTPS only: the key travels in a header on every request.
+
+### Connect an agent
+
+For Claude Code:
+
+```sh
+claude mcp add --transport http openshift-json-schema https://example.com/mcp \
+  --header "Authorization: Bearer <key>"
+```
+
+For agents configured with JSON:
+
+```json
+{
+  "mcpServers": {
+    "openshift-json-schema": {
+      "type": "http",
+      "url": "https://example.com/mcp",
+      "headers": {"Authorization": "Bearer <key>"}
+    }
+  }
+}
+```
+
+### Good to know
+
+- Every call stands alone (no sessions), so restarting loses nothing. Rate
+  limit counts do start again after a restart.
+- It logs one line per request: the key's name, the status and the time
+  taken. Never the request body.
+- A call can carry up to 1MB of YAML and 200 documents (`-max-input` changes
+  the first).
+- It re-reads `versions.json` every hour, so a newly published minor shows
+  up without a restart.
+- `/healthz` needs no key.
 
 ## Develop
 

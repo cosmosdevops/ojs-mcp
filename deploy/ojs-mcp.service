@@ -1,0 +1,23 @@
+[Unit]
+Description=OpenShift JSON Schema MCP server
+After=network.target
+
+[Service]
+# Reads the schemas straight from the site's document root, and the API
+# keys from a file only root and this service can read.
+ExecStart=/usr/local/bin/ojs-mcp -http 127.0.0.1:8087 \
+    -schemas /var/www/openshiftjsonschema.dev \
+    -keys /etc/ojs-mcp/keys
+Restart=on-failure
+User=ojs-mcp
+Group=ojs-mcp
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target
