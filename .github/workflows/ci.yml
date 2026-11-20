@@ -48,11 +48,27 @@ jobs:
       IMAGE: ghcr.io/${{ github.repository }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the tags, to work out the version
+      - name: Work out the version
+        # A tag build is that version (v1.2.3 -> 1.2.3). Anything else is
+        # named after the last tag, e.g. 1.2.3-4-gabc1234.
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            version=${GITHUB_REF_NAME#v}
+          else
+            version=$(git describe --tags --always)
+            version=${version#v}
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "Building version $version"
       - name: Build
-        run: docker build -t "$IMAGE:build" .
+        run: docker build --build-arg "VERSION=$VERSION" -t "$IMAGE:build" .
       - name: Check the image runs
         run: |
-          docker run --rm "$IMAGE:build" -version
+          reported=$(docker run --rm "$IMAGE:build" -version)
+          echo "The image reports version $reported"
+          [ "$reported" = "$VERSION" ]
           # The keys line must come out on stdout alone, never the key.
           line=$(docker run --rm "$IMAGE:build" -new-key ci 2>/dev/null)
           echo "$line" | grep -Eq '^ci [0-9a-f]{64}$'

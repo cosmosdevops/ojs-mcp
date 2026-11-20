@@ -22,8 +22,6 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-var version = "0.1.0"
-
 const instructions = `Checks Kubernetes and OpenShift YAML manifests against the JSON Schemas from openshiftjsonschema.dev.
 Call validate with the YAML before you hand a manifest to the user or apply it.
 Pass the user's OpenShift version if you know it; otherwise the newest is used.`
