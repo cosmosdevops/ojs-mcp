@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -291,5 +292,59 @@ func TestCheckHealth(t *testing.T) {
 	ts.Close()
 	if err := checkHealth(ts.URL + "/healthz"); err == nil {
 		t.Error("a stopped server counted as healthy")
+	}
+}
+
+// Clients on the newer protocol ask to be told when the tool list changes,
+// with a request the server holds open for as long as there is something to
+// wait for. The list never changes, so the server must say so and answer at
+// once: a held request ties up a connection per client, and proxies cut it
+// at their timeout, after which the client just asks again.
+func TestListenReturnsAtOnce(t *testing.T) {
+	path, keys := keysFile(t, "alice")
+	ts := hosted(t, path, 600, 100)
+
+	const meta = `"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28",` +
+		`"io.modelcontextprotocol/clientInfo":{"name":"t","version":"0"},` +
+		`"io.modelcontextprotocol/clientCapabilities":{}}`
+	body := `{"jsonrpc":"2.0","id":1,"method":"subscriptions/listen","params":{` + meta +
+		`,"notifications":{"toolsListChanged":true}}}`
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/mcp", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+keys["alice"])
+	req.Header.Set("Mcp-Protocol-Version", "2026-07-28")
+	req.Header.Set("Mcp-Method", "subscriptions/listen")
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	start := time.Now()
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("the request was held open: %v", err)
+	}
+	defer resp.Body.Close()
+	reply, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("the reply was held open after %v: %v", time.Since(start).Round(time.Millisecond), err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d: %s", resp.StatusCode, reply)
+	}
+	if strings.Contains(string(reply), `"toolsListChanged":true`) {
+		t.Errorf("the server agreed to send tool list changes: %s", reply)
+	}
+}
+
+func TestToolListIsAdvertisedAsFixed(t *testing.T) {
+	s := connect(t, "testdata/site", 1<<20)
+	caps := s.InitializeResult().Capabilities
+	if caps.Tools == nil {
+		t.Fatal("the tools capability is missing")
+	}
+	if caps.Tools.ListChanged {
+		t.Error("the server says its tool list can change; it can't")
 	}
 }
