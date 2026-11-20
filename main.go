@@ -48,7 +48,14 @@ type VersionList struct {
 func newServer(cat *catalog, maxInput int) *mcp.Server {
 	s := mcp.NewServer(
 		&mcp.Implementation{Name: "openshift-json-schema", Title: "OpenShift JSON Schema", Version: version},
-		&mcp.ServerOptions{Instructions: instructions},
+		&mcp.ServerOptions{
+			Instructions: instructions,
+			// The tool list never changes while the server runs. Saying so
+			// stops clients from holding a connection open to wait for
+			// changes, which over HTTP ties up a connection per client and
+			// gets cut and reopened at every timeout.
+			Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
+		},
 	)
 	v := &validator{cat: cat}
 	closed := false
