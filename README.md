@@ -66,10 +66,15 @@ mistake rather than a custom resource:
 To tell the two apart it reads each schema directory's `all.json`, which
 lists every type that version has.
 
-It uses the `next-standalone` schemas where a version has them (4.18 on) and
-the `standalone` ones before that. See
-[Flavours](https://github.com/cosmosdevops/openshift-json-schema/blob/main/automation/README.md#flavours). It validates with the same
-library and settings as kubeconform, so the two should agree.
+The site publishes each version's schemas in several sets. `ojs-mcp` uses the
+`next-standalone` set where a version has it (4.18 on) and the `standalone`
+set before that. The "next" schemas check manifests more like the API server
+does: for example, a required field set to `null` fails, as leaving it out
+does. With `strict` on, it uses the `-strict` variant of the same set. The
+[site](https://openshiftjsonschema.dev) lists which sets each version has.
+
+It validates with the same library and settings as kubeconform, so the two
+should agree.
 
 It only checks structure and types. It never contacts a cluster, so it can't
 tell whether a name, an image or a referenced object exists.
