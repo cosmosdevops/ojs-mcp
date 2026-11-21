@@ -1,34 +1,44 @@
-# ojs-mcp: check manifests from an AI agent
+# ojs-mcp
 
-`ojs-mcp` is an [MCP](https://modelcontextprotocol.io) server. It lets an AI
-agent check the YAML it writes against the schemas on
-[openshiftjsonschema.dev](https://openshiftjsonschema.dev), before the YAML
-reaches a cluster.
+**Validate OpenShift manifests before they reach your cluster.**
 
-It runs in two ways:
+`ojs-mcp` is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that lets AI agents validate Kubernetes and OpenShift manifests against the JSON schemas published by [openshiftjsonschema.dev](https://openshiftjsonschema.dev).
 
-- **Locally.** The agent starts it on your own machine and talks to it over
-  stdin/stdout. Your manifests never leave that machine. The only thing it
-  does on the network is download the schemas it needs from the site.
-- **Hosted.** One copy serves many agents over HTTP. Each caller needs an
-  API key and has their own rate limit. See [Host it](#host-it).
+When an agent generates or modifies YAML, it can use `ojs-mcp` to check that the resources, fields and API versions are valid before attempting to apply them to a cluster.
 
-## Tools
+No cluster connection is required.
 
-| Tool | What it does |
+## How it works
+
+There are two ways to run `ojs-mcp`:
+
+- **Local (stdio):** Your AI agent starts `ojs-mcp` as a local process and communicates with it over stdin/stdout. Your manifests stay on your machine. The only network access needed is to download schemas from openshiftjsonschema.dev.
+- **Hosted (HTTP):** Run a shared instance that multiple agents can connect to over HTTP. Each client authenticates with an API key and has its own rate limit.
+
+For most individual users, running locally is the simplest option. If you're supporting multiple developers or agents, the hosted option provides a central service.
+
+## Available tools
+
+`ojs-mcp` exposes two MCP tools:
+
+| Tool | Description |
 | --- | --- |
-| `validate` | Checks one or more YAML documents against an OpenShift version. |
-| `list_versions` | Lists the OpenShift versions that have schemas. |
+| `validate` | Validate one or more YAML manifests against a specific OpenShift version. |
+| `list_versions` | List the OpenShift versions with available schemas. |
 
-`validate` takes:
+### Validating manifests
 
-- `yaml`: the manifest text. Several documents separated by `---` are fine, and
-  so is a `kind: List`.
-- `version` (optional): `4.22` or `4.22.14`. The newest version is the default.
-- `strict` (optional, default `true`): reject fields the schema doesn't know.
-  This is what catches a misspelt or misplaced field.
+The `validate` tool accepts the following parameters:
 
-It returns one result per manifest:
+| Parameter | Required | Description |
+| --- | --- | --- |
+| `yaml` | Yes | The YAML to validate. Supports multiple documents separated by `---` and Kubernetes `kind: List` resources. |
+| `version` | No | Target OpenShift version, such as `4.22` or `4.22.14`. Defaults to the latest available version. |
+| `strict` | No | Whether to reject fields not defined in the schema. Defaults to `true`. |
+
+For example, suppose an agent generates an OpenShift Route with an incorrect field called `hostname`.
+
+The validation result would look something like this:
 
 ```json
 {
@@ -46,54 +56,84 @@ It returns one result per manifest:
 }
 ```
 
-A status is one of:
+Each manifest receives its own result, so an agent can identify exactly which resource failed and why.
 
-- `valid` or `invalid`.
-- `skipped`: there is no schema for that kind, so it wasn't checked. This is
-  normal for custom resources from operators that a base install doesn't
-  have, such as cert-manager's `Certificate`.
-- `error`: the document isn't valid YAML or isn't a Kubernetes object.
+### Understanding validation results
 
-A kind with no schema is `invalid`, not `skipped`, when it is clearly a
-mistake rather than a custom resource:
+A manifest can have one of four statuses:
 
-| Manifest has | Problem reported |
+| Status | Meaning |
 | --- | --- |
-| `kind: Rout` in `route.openshift.io/v1` | no such kind. Did you mean Route? |
-| `HorizontalPodAutoscaler` in `autoscaling/v2beta2` | not in that version; autoscaling has it in version v2 |
-| `kind: Route` in `apiVersion: v1` | no such kind; a kind with that name exists in another API group |
+| `valid` | The manifest passed schema validation. |
+| `invalid` | The manifest contains fields, types or API references that don't match the schema. |
+| `skipped` | No schema was available for the resource, so validation wasn't possible. |
+| `error` | The input isn't valid YAML or doesn't represent a Kubernetes object. |
 
-To tell the two apart it reads each schema directory's `all.json`, which
-lists every type that version has.
+**A skipped manifest isn't necessarily a problem.**
 
-The site publishes each version's schemas in several sets. `ojs-mcp` uses the
-`next-standalone` set where a version has it (4.18 on) and the `standalone`
-set before that. The "next" schemas check manifests more like the API server
-does: for example, a required field set to `null` fails, as leaving it out
-does. With `strict` on, it uses the `-strict` variant of the same set. The
-[site](https://openshiftjsonschema.dev) lists which sets each version has.
+For example, a cert-manager `Certificate` is a custom resource that doesn't exist in a standard OpenShift installation. Unless its schema is available, `ojs-mcp` will skip it rather than assume it's invalid.
 
-It validates with the same library and settings as kubeconform, so the two
-should agree.
+However, missing schemas can also indicate mistakes, particularly when an agent invents a resource kind or uses the wrong API version.
 
-It only checks structure and types. It never contacts a cluster, so it can't
-tell whether a name, an image or a referenced object exists.
+`ojs-mcp` attempts to distinguish between the two.
 
-## Install
+For example:
 
-Install it (needs Go 1.26 or later):
+| Manifest | Validation result |
+| --- | --- |
+| `kind: Rout` with `apiVersion: route.openshift.io/v1` | Invalid. Suggests `Route` as the intended kind. |
+| `HorizontalPodAutoscaler` with `apiVersion: autoscaling/v2beta2` | Invalid. The resource is available under `autoscaling/v2`. |
+| `kind: Route` with `apiVersion: v1` | Invalid. The resource exists, but belongs to another API group. |
+| cert-manager `Certificate` | Skipped. The resource is likely provided by a separately installed operator. |
+
+To make these distinctions, `ojs-mcp` reads the `all.json` index from each schema directory. This provides a list of available resource types and API versions, allowing it to identify likely mistakes rather than simply skipping anything it doesn't recognise.
+
+## Schema validation
+
+`ojs-mcp` uses the schemas published by [openshiftjsonschema.dev](https://openshiftjsonschema.dev).
+
+The site provides several schema sets for each OpenShift version. `ojs-mcp` selects the most appropriate set automatically:
+
+- **OpenShift 4.18 and later:** Uses `next-standalone`.
+- **Earlier versions:** Uses `standalone`.
+- **Strict validation:** Uses the corresponding `-strict` variant.
+
+The newer `next-standalone` schemas provide validation behaviour closer to the Kubernetes API server. For example, setting a required field to `null` is treated as invalid, just as omitting that field would be.
+
+Validation uses the same library and settings as [kubeconform](https://github.com/yannh/kubeconform), so results should be consistent between the two tools.
+
+### What validation doesn't check
+
+`ojs-mcp` validates the structure and types of your manifests, not whether they can actually be deployed.
+
+It doesn't connect to a Kubernetes or OpenShift cluster, so it can't check things like:
+
+- Whether a referenced Secret, ConfigMap or Service exists.
+- Whether a container image is available.
+- Whether a resource name is already in use.
+- Whether an admission policy would reject the resource.
+
+Think of it as an early validation step, rather than a replacement for server-side validation or admission control.
+
+## Installation
+
+### Install with Go
+
+You'll need Go 1.26 or later.
 
 ```sh
 go install github.com/cosmosdevops/ojs-mcp@latest
 ```
 
-Then tell your agent to run `ojs-mcp`. For Claude Code:
+Once installed, configure your AI agent to start `ojs-mcp` using stdio.
+
+For **Claude Code**:
 
 ```sh
 claude mcp add openshift-json-schema -- ojs-mcp
 ```
 
-For agents configured with JSON:
+For agents that use a JSON configuration:
 
 ```json
 {
@@ -103,154 +143,308 @@ For agents configured with JSON:
 }
 ```
 
-To work offline, point it at a copy of the schemas. It needs `versions.json`
-and the `v*-standalone*` directories, laid out as on the site:
+That's all you need for local use.
+
+Your agent can now discover the `validate` and `list_versions` tools and use them when working with OpenShift manifests.
+
+### Using local schemas
+
+By default, `ojs-mcp` downloads the schemas it needs from openshiftjsonschema.dev.
+
+If you want to run completely offline, or already have a local copy of the schemas, you can point it at that directory:
 
 ```sh
 ojs-mcp -schemas /path/to/schemas
 ```
 
-## Host it
+The directory should contain `versions.json` and the `v*-standalone*` schema directories, following the same structure as the website.
 
-With `-http`, `ojs-mcp` serves MCP at `/mcp`. It only answers callers who
-send an API key, and each key has its own rate limit.
+## Hosting an MCP server
 
-Keep in mind what hosting means: callers' manifests are sent to your server.
-`ojs-mcp` holds them in memory for the length of one call and never writes or
-logs them, but they do pass through it and any proxy in front of it.
-Manifests can contain secrets, so tell your users, and prefer the local mode
-for anything sensitive.
+If you're using `ojs-mcp` across a team or want to make validation available to several agents, you can run it as a shared HTTP service.
+
+Start it with `-http` to expose an MCP endpoint at `/mcp`.
+
+The hosted service includes:
+
+- API key authentication.
+- Per-key rate limiting.
+- Automatic key-file reloading.
+- A health-check endpoint.
+- Request logging without recording manifest contents.
+
+**A note on security:** Unlike local mode, hosted mode sends manifests over the network to your server.
+
+`ojs-mcp` processes manifests in memory and doesn't write or log their contents. However, the manifests still travel through your network and any reverse proxies in front of the service.
+
+Since Kubernetes manifests can contain sensitive information, including Secrets, make sure users understand this distinction. Local mode is generally preferable when handling sensitive workloads.
 
 ### API keys
 
-Make a key for each person or team:
+Each user, team or automated client should have its own API key.
+
+Generate one with:
 
 ```sh
 sudo sh -c 'ojs-mcp -new-key alice >> /etc/ojs-mcp/keys'
 ```
 
-This prints the key once, for you to pass on, and adds a line to the keys
-file. The file holds a name and the SHA-256 of each key, never the key
-itself, so a lost key can't be recovered: make a new one.
+The command generates a key and adds its entry to the keys file.
 
-```
+The actual API key is displayed only once. The keys file stores a name and a SHA-256 hash, not the original key.
+
+For example:
+
+```text
 # /etc/ojs-mcp/keys
 alice 5f2b6c…
 build-bot 9d41e0…
 ```
 
-To revoke a key, delete its line. The server notices changes to the file
-within a few seconds, with no restart. If an edit leaves the file broken, it
-keeps using the keys it had and logs why.
+If someone loses their key, generate a replacement. There's no way to recover the original from the stored hash.
 
-### Rate limits
+To revoke access, simply remove the corresponding line from the file.
 
-Each key may make 60 requests a minute, and up to 30 at once before that rate
-applies. Change these with `-rate` and `-burst`. Every MCP message counts as
-a request, including the few an agent sends when it connects. A caller over
-the limit gets `429 Too Many Requests` with a `Retry-After` header.
+The server checks the file for changes and picks them up within a few seconds, without requiring a restart.
 
-One key's use doesn't affect another's. Requests without a valid key get
-`401` and don't count against anyone.
+If the updated file is malformed, the server logs the problem and continues using the last valid configuration.
 
-### Set it up
+### Rate limiting
 
-On a server that has the site's files, with the files in `deploy/`:
+Each API key has its own rate limit, so one client can't consume another client's allowance.
 
-```sh
-CGO_ENABLED=0 go build -trimpath -o ojs-mcp .       # on any machine
-sudo install -m 755 ojs-mcp /usr/local/bin/
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin ojs-mcp
-sudo install -d -m 750 -o root -g ojs-mcp /etc/ojs-mcp
-sudo install -m 640 -o root -g ojs-mcp /dev/null /etc/ojs-mcp/keys
-sudo install -m 644 deploy/ojs-mcp.service /etc/systemd/system/
-sudo systemctl daemon-reload && sudo systemctl enable --now ojs-mcp
-curl http://127.0.0.1:8087/healthz                  # prints ok
+The defaults are:
+
+| Setting | Default | Flag |
+| --- | --- | --- |
+| Requests per minute | 60 | `-rate` |
+| Burst allowance | 30 | `-burst` |
+
+These can be adjusted when starting the server.
+
+Rate limiting applies to every MCP message, including the initial messages exchanged when an agent connects.
+
+If a client exceeds its allowance, the server responds with:
+
+```http
+429 Too Many Requests
+Retry-After: <seconds>
 ```
 
-Then route `/mcp` to it from Apache. Copy `deploy/ojs-mcp-apache.conf` to
-`/etc/apache2/` and include it in the site's HTTPS `<VirtualHost>`:
+Requests without a valid API key receive `401 Unauthorized` and don't count against any client's limit.
+
+## Deploying the server
+
+There are a few ways to host `ojs-mcp`, depending on your environment.
+
+### Option 1: Native systemd service
+
+If you're hosting the service on a Linux server that already has the openshiftjsonschema.dev files available, you can run it directly under systemd.
+
+Build the binary:
+
+```sh
+CGO_ENABLED=0 go build -trimpath -o ojs-mcp .
+```
+
+Install it and create a dedicated service account:
+
+```sh
+sudo install -m 755 ojs-mcp /usr/local/bin/
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin ojs-mcp
+```
+
+Create the configuration directory and keys file:
+
+```sh
+sudo install -d -m 750 -o root -g ojs-mcp /etc/ojs-mcp
+sudo install -m 640 -o root -g ojs-mcp /dev/null /etc/ojs-mcp/keys
+```
+
+Install the provided systemd unit:
+
+```sh
+sudo install -m 644 deploy/ojs-mcp.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now ojs-mcp
+```
+
+Check that the service is running:
+
+```sh
+curl http://127.0.0.1:8087/healthz
+```
+
+A healthy instance returns:
+
+```text
+ok
+```
+
+#### Configure Apache
+
+The repository includes an example Apache configuration in `deploy/ojs-mcp-apache.conf`.
+
+Copy it to `/etc/apache2/` and include it in your site's HTTPS `<VirtualHost>`.
+
+Enable the required modules and reload Apache:
 
 ```sh
 sudo a2enmod proxy proxy_http
-sudo apachectl configtest && sudo systemctl reload apache2
+sudo apachectl configtest
+sudo systemctl reload apache2
 ```
 
-Serve it over HTTPS only: the key travels in a header on every request.
+Your reverse proxy should forward `/mcp` to the local service.
 
-### Or set it up with Docker
+**Always expose the hosted endpoint over HTTPS.** API keys are sent in an HTTP header with every request.
 
-There is an image at `ghcr.io/cosmosdevops/ojs-mcp`, built from every commit
-on `main`. It holds the one program and nothing else, and runs as an
-unprivileged user (ID 65532).
+### Option 2: Docker
 
-Make the keys directory, readable by that user, then start it with the
-compose file from `deploy/`:
+A container image is available at:
+
+```text
+ghcr.io/cosmosdevops/ojs-mcp
+```
+
+A new image is built from every commit to `main`.
+
+The image contains the `ojs-mcp` binary and runs as an unprivileged user (UID 65532).
+
+The repository also includes a ready-to-use Compose file under `deploy/`.
+
+First, create the keys directory and ensure the container user can read it:
 
 ```sh
 sudo install -d -m 750 -o root -g 65532 /etc/ojs-mcp
 sudo install -m 640 -o root -g 65532 /dev/null /etc/ojs-mcp/keys
-docker compose -f deploy/compose.yaml up -d
-curl http://127.0.0.1:8087/healthz                  # prints ok
 ```
 
-The compose file mounts the site's document root and the keys directory
-read-only, and publishes the port on localhost only. Route `/mcp` to it from
-Apache as above.
+Start the service:
 
-Make keys with the image too. The key is printed for you; the line for the
-file goes to standard output:
+```sh
+docker compose -f deploy/compose.yaml up -d
+```
+
+Verify that it's running:
+
+```sh
+curl http://127.0.0.1:8087/healthz
+```
+
+The Compose configuration mounts the schema files and API key directory as read-only volumes. It also binds the service to localhost, so you'll need a reverse proxy to make it externally accessible.
+
+You can use the Apache configuration described above.
+
+#### Generate API keys with Docker
+
+You don't need to install the binary on the host to generate API keys.
+
+Use the container instead:
 
 ```sh
 sudo sh -c 'docker run --rm ghcr.io/cosmosdevops/ojs-mcp -new-key alice >> /etc/ojs-mcp/keys'
 ```
 
-To update, pull and start again. Nothing is lost: there are no sessions.
+As with the native installation, the key is displayed once and its hash is stored in the keys file.
+
+#### Updating
+
+Pull the latest image and recreate the service:
 
 ```sh
-docker compose -f deploy/compose.yaml pull && docker compose -f deploy/compose.yaml up -d
+docker compose -f deploy/compose.yaml pull
+docker compose -f deploy/compose.yaml up -d
 ```
 
-To build the image yourself instead:
-`docker build --build-arg VERSION=1.2.3 -t ojs-mcp .`
+`ojs-mcp` doesn't maintain persistent MCP sessions, so restarting the service doesn't lose any session state.
 
-**Podman** works too. The image and the compose file run unchanged with
-`podman` and `podman-compose`. Two things differ:
+If you'd rather build the image yourself:
 
-- Run as root (`sudo podman …`), the keys directory is set up exactly as
-  above.
-- Run rootless, user IDs inside the container are shifted, so ID 65532 can't
-  read a file that only your own user can. Map the container's user onto
-  yours with `--userns=keep-id:uid=65532,gid=65532` (in compose:
-  `userns_mode: "keep-id:uid=65532,gid=65532"`), and have your own user own
-  the keys directory.
+```sh
+docker build --build-arg VERSION=1.2.3 -t ojs-mcp .
+```
 
-On a host with SELinux (Fedora, RHEL), add `,z` to the two volume lines, as
-in `/etc/ojs-mcp:/keys:ro,z`.
+### Option 3: Podman
 
-The image also works for the local mode, with no Go needed:
+The same container image works with Podman, and you can use the provided Compose file with `podman-compose`.
+
+There are a couple of things to consider.
+
+**Rootful Podman**
+
+If you're running Podman as root (`sudo podman`), use the same keys directory permissions as the Docker setup.
+
+**Rootless Podman**
+
+Rootless Podman uses user namespaces, which means the container's UID 65532 may not map directly to your host user.
+
+You can map the container user to your own account using:
+
+```sh
+--userns=keep-id:uid=65532,gid=65532
+```
+
+Or set this in your Compose configuration:
+
+```yaml
+userns_mode: "keep-id:uid=65532,gid=65532"
+```
+
+Make sure your host user owns the keys directory.
+
+**SELinux**
+
+On Fedora, RHEL and other SELinux-enabled systems, add `,z` to the volume mounts so the container can access them with the appropriate SELinux labels.
+
+For example:
+
+```text
+/etc/ojs-mcp:/keys:ro,z
+```
+
+### Running locally with a container
+
+You can also use the container image as a local stdio MCP server, without installing Go or the binary.
+
+For agents using JSON configuration:
 
 ```json
 {
   "mcpServers": {
     "openshift-json-schema": {
       "command": "docker",
-      "args": ["run", "--rm", "-i", "ghcr.io/cosmosdevops/ojs-mcp"]
+      "args": [
+        "run",
+        "--rm",
+        "-i",
+        "ghcr.io/cosmosdevops/ojs-mcp"
+      ]
     }
   }
 }
 ```
 
-### Connect an agent
+This runs a new container when your agent starts the MCP server and removes it when the process exits.
 
-For Claude Code:
+It behaves the same way as the native local installation.
+
+## Connecting to a hosted instance
+
+Once your HTTP service is running behind HTTPS, you can connect your agents to it.
+
+### Claude Code
 
 ```sh
 claude mcp add --transport http openshift-json-schema https://example.com/mcp \
   --header "Authorization: Bearer <key>"
 ```
 
-For agents configured with JSON:
+Replace the example URL and API key with your own.
+
+### JSON-based configuration
+
+For other MCP clients that support HTTP transport:
 
 ```json
 {
@@ -258,50 +452,74 @@ For agents configured with JSON:
     "openshift-json-schema": {
       "type": "http",
       "url": "https://example.com/mcp",
-      "headers": {"Authorization": "Bearer <key>"}
+      "headers": {
+        "Authorization": "Bearer <key>"
+      }
     }
   }
 }
 ```
 
-### Good to know
+Each client should use its own API key, particularly when sharing an instance across teams.
 
-- Every call stands alone (no sessions), so restarting loses nothing. Rate
-  limit counts do start again after a restart.
-- It logs one line per request: the key's name, the status and the time
-  taken. Never the request body.
-- A call can carry up to 1MB of YAML and 200 documents (`-max-input` changes
-  the first).
-- It re-reads `versions.json` every hour, so a newly published minor shows
-  up without a restart.
-- `/healthz` needs no key.
+## Operational details
 
-## Develop
+A few things worth knowing when running a hosted instance:
+
+- **Stateless requests:** Every call is independent. There are no persistent MCP sessions to manage, and restarting the server doesn't interrupt stored session state.
+- **Rate limits reset on restart:** Rate limit counters are held in memory and start fresh when the process restarts.
+- **Request logging:** The server logs the API key name, response status and request duration. It never logs request bodies or manifest contents.
+- **Input limits:** A validation request can contain up to 1 MB of YAML and 200 documents. The input size limit can be changed with `-max-input`.
+- **Schema updates:** The server reloads `versions.json` every hour, so newly published OpenShift minor versions become available without restarting.
+- **Health checks:** `/healthz` is available without authentication, making it suitable for monitoring and container health checks.
+
+## Development
+
+To work on `ojs-mcp` locally, clone the repository and run the tests:
 
 ```sh
 go test ./...
-go build        # then point an MCP client at ./ojs-mcp
 ```
 
-The tests use a tiny fake schema tree in `testdata/site`, so they
-don't need the network.
+Build the binary:
 
-### Releasing
+```sh
+go build
+```
 
-The version is the git tag. Nothing in the code needs changing:
+You can then configure your MCP client to use the locally built `./ojs-mcp` binary.
+
+The tests use a small set of example schemas under `testdata/site`, so you don't need network access or a full copy of the OpenShift schemas to run them.
+
+### Releasing a new version
+
+Releases are based on Git tags. There's no need to update a version constant in the source code.
+
+Create and push a tag:
 
 ```sh
 git tag -a v1.2.3 -m "ojs-mcp 1.2.3"
 git push origin v1.2.3
 ```
 
-CI then publishes the `1.2.3` image, and `go install …@v1.2.3` works.
-`ojs-mcp -version` reports the tag in both. A build between tags reports a
-version made from the last tag and the commit, and a build with no git
-history to read reports `dev`.
+CI will publish the corresponding `1.2.3` container image.
+
+The tagged version can also be installed directly with Go:
+
+```sh
+go install github.com/cosmosdevops/ojs-mcp@v1.2.3
+```
+
+To check the version of a running binary:
+
+```sh
+ojs-mcp -version
+```
+
+For tagged builds, this reports the release version. Builds made between tags include information from the latest tag and commit. If Git history isn't available, the version is reported as `dev`.
 
 ## Licence
 
-Apache 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Licensed under the Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE) for details.
 
-Not affiliated with or endorsed by Red Hat.
+This project is not affiliated with or endorsed by Red Hat.
